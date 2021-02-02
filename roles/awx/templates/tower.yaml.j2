@@ -28,6 +28,52 @@ spec:
       labels:
         app: awx
     spec:
+{% if custom_venvs is defined %}
+{% set trusted_hosts = "" %}
+      initContainers:
+        - image: 'centos:7'
+          name: init-custom-venvs
+{% if http_proxy is defined or https_proxy is defined %}
+{% set trusted_hosts = "--trusted-host pypi.org --trusted-host files.pythonhosted.org --trusted-host pypi.python.org" %}
+          env:
+{% if http_proxy is defined %}
+            - name: http_proxy
+              value: {{ http_proxy }}
+{% endif %}
+{% if https_proxy is defined %}
+            - name: https_proxy
+              value: {{ https_proxy }}
+{% endif %}
+{% if no_proxy is defined %}
+            - name: no_proxy
+              value: {{ no_proxy }}
+{% endif %}
+{% endif %}
+          command:
+            - sh
+            - '-c'
+            - >-
+              yum install -y ansible curl python-setuptools epel-release \
+                openssl openssl-devel gcc python-devel &&
+              yum install -y python-virtualenv python36 python36-devel &&
+              mkdir -p {{ custom_venvs_path }} &&
+{% for custom_venv in custom_venvs %}
+              virtualenv -p {{ custom_venv.python | default(custom_venvs_python) }} \
+                {{ custom_venvs_path }}/{{ custom_venv.name }} &&
+              source {{ custom_venvs_path }}/{{ custom_venv.name }}/bin/activate &&
+              {{ custom_venvs_path }}/{{ custom_venv.name }}/bin/pip install {{ trusted_hosts }} -U psutil \
+                "ansible=={{ custom_venv.python_ansible_version }}" &&
+{% if custom_venv.python_modules is defined %}
+              {{ custom_venvs_path }}/{{ custom_venv.name }}/bin/pip install {{ trusted_hosts }} -U \
+                {% for module in custom_venv.python_modules %}{{ module }} {% endfor %} &&
+{% endif %}
+              deactivate &&
+{% endfor %}
+              :
+          volumeMounts:
+            - name: custom-venvs
+              mountPath: {{ custom_venvs_path }}
+{% endif %}
       containers:
         - image: '{{ tower_redis_image }}'
           name: redis
@@ -82,6 +128,10 @@ spec:
               mountPath: "/var/run/awx-rsyslog"
             - name: rsyslog-dir
               mountPath: "/var/lib/awx/rsyslog"
+{% if custom_venvs is defined %}
+            - name: custom-venvs
+              mountPath: {{ custom_venvs_path }}
+{% endif %}
 {% if tower_web_extra_volume_mounts -%}
             {{ tower_web_extra_volume_mounts | indent(width=12, indentfirst=True) }}
 {% endif %}
@@ -138,6 +188,10 @@ spec:
               mountPath: "/var/run/awx-rsyslog"
             - name: rsyslog-dir
               mountPath: "/var/lib/awx/rsyslog"
+{% if custom_venvs is defined %}
+            - name: custom-venvs
+              mountPath: {{ custom_venvs_path }}
+{% endif %}
 {% if tower_task_extra_volume_mounts -%}
             {{ tower_task_extra_volume_mounts | indent(width=12, indentfirst=True) }}
 {% endif %}
@@ -227,6 +281,8 @@ spec:
         - name: rsyslog-socket
           emptyDir: {}
         - name: rsyslog-dir
+          emptyDir: {}
+        - name: custom-venvs
           emptyDir: {}
 {% if tower_extra_volumes -%}
         {{ tower_extra_volumes | indent(width=8, indentfirst=True) }}
